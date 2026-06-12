@@ -59,16 +59,27 @@ def folder_name(frontend_id: str, title_slug: str) -> str:
     return f"{frontend_id}-{title_slug}"
 
 
+def _is_complete_problem_dir(path: str) -> bool:
+    """A folder is only 'complete' if it contains README.md.
+
+    If a prior run was interrupted after os.makedirs() but before the files
+    were flushed, the directory exists but is empty or partial.  Without this
+    guard, problem_exists() would return True and the broken folder would
+    never be repaired.
+    """
+    return os.path.isfile(os.path.join(path, "README.md"))
+
+
 def problem_exists(repo_root: str, frontend_id: str, title_slug: str) -> bool:
     """
-    True if a folder for this problem already exists in the repo.
+    True if a complete folder for this problem already exists in the repo.
 
     Two checks are performed in order:
 
-    1. Exact match: {frontend_id}-{title_slug} directory exists.
-       This is the fast path and covers 99 % of cases.
+    1. Exact match: {frontend_id}-{title_slug} directory exists and contains
+       README.md (the completion sentinel written last by write_problem).
 
-    2. Slug-pattern fallback: any directory matching r'^[0-9]+-{title_slug}$'.
+    2. Slug-pattern fallback: any complete directory matching r'^[0-9]+-{title_slug}$'.
        This handles the case where a pre-existing folder (e.g. imported by
        LeetSync) used a different numeric ID than the one LeetCode's
        questionFrontendId returns today. Without this check, the backfill
@@ -76,15 +87,17 @@ def problem_exists(repo_root: str, frontend_id: str, title_slug: str) -> bool:
        producing silent duplicates (which is exactly what happened to the
        8 contest-problem pairs already in this repo).
     """
-    if os.path.isdir(os.path.join(repo_root, folder_name(frontend_id, title_slug))):
+    exact = os.path.join(repo_root, folder_name(frontend_id, title_slug))
+    if os.path.isdir(exact) and _is_complete_problem_dir(exact):
         return True
     slug_suffix = f"-{title_slug}"
     try:
         for entry in os.listdir(repo_root):
             if (entry.endswith(slug_suffix)
-                    and _PROBLEM_DIR_RE.match(entry)
-                    and os.path.isdir(os.path.join(repo_root, entry))):
-                return True
+                    and _PROBLEM_DIR_RE.match(entry)):
+                candidate = os.path.join(repo_root, entry)
+                if os.path.isdir(candidate) and _is_complete_problem_dir(candidate):
+                    return True
     except OSError:
         pass
     return False
@@ -110,19 +123,30 @@ def write_problem(repo_root: str, question: dict, code: str, lang: str) -> str:
     Caller must have already verified the folder does not exist (via
     `problem_exists`) so this never silently overwrites prior work.
 
+    Files are written atomically: code is flushed to a .tmp sibling and
+    renamed into place; README.md is written last so it acts as a completion
+    sentinel — problem_exists() checks for README.md to distinguish complete
+    folders from ones that were interrupted mid-write.
+
     Returns the folder name, e.g. "23-merge-k-sorted-lists".
     """
     frontend_id = question["questionFrontendId"]
     slug = question["titleSlug"]
     name = folder_name(frontend_id, slug)
     folder = os.path.join(repo_root, name)
-    os.makedirs(folder, exist_ok=False)
-
-    with open(os.path.join(folder, "README.md"), "w", encoding="utf-8") as f:
-        f.write(_readme_content(question))
+    os.makedirs(folder, exist_ok=True)
 
     ext = LANGUAGE_EXTENSIONS.get((lang or "").lower(), (lang or "txt").lower())
-    with open(os.path.join(folder, f"{slug}.{ext}"), "w", encoding="utf-8") as f:
+    sol_path = os.path.join(folder, f"{slug}.{ext}")
+    sol_tmp = sol_path + ".tmp"
+    with open(sol_tmp, "w", encoding="utf-8") as f:
         f.write(code)
+    os.replace(sol_tmp, sol_path)
+
+    readme_path = os.path.join(folder, "README.md")
+    readme_tmp = readme_path + ".tmp"
+    with open(readme_tmp, "w", encoding="utf-8") as f:
+        f.write(_readme_content(question))
+    os.replace(readme_tmp, readme_path)
 
     return name

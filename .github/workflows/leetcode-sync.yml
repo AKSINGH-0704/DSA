@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 # Prevent overlapping runs from racing on the same commit/push.
 concurrency:
@@ -101,3 +102,61 @@ jobs:
           echo "                → 'Read and write permissions' → Save."
           echo ""
           echo "  Timeout     → LeetCode API was slow. Re-run the workflow."
+
+      - name: Create failure issue
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create the label if it doesn't already exist (idempotent).
+          gh label create "sync-failure" \
+            --description "Automated LeetCode sync failure" \
+            --color "d93f0b" 2>/dev/null || true
+
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          RUN_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # If an open issue with this label already exists, add a comment
+          # rather than opening a duplicate.
+          EXISTING=$(gh issue list \
+            --label sync-failure \
+            --state open \
+            --limit 1 \
+            --json number \
+            --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING" ]; then
+            echo "Existing issue #${EXISTING} found — adding comment."
+            gh issue comment "$EXISTING" \
+              --body "Sync failed again at ${RUN_DATE}: [view run](${RUN_URL})"
+          else
+            BODY_FILE="${RUNNER_TEMP}/sync_failure_body.md"
+            cat > "$BODY_FILE" <<EOF
+## LeetCode Sync Failed
+
+The scheduled sync workflow failed. **No action needed unless this repeats.**
+
+| | |
+|---|---|
+| Run | [View logs](${RUN_URL}) |
+| Time | ${RUN_DATE} |
+
+## Common causes and fixes
+
+| Error | Fix |
+|---|---|
+| HTTP 401 | LEETCODE\_SESSION expired — refresh cookie and update the secret |
+| HTTP 403 | Transient Cloudflare block — re-run the workflow |
+| HTTP 429 | Rate-limited — wait 10–30 min, re-run |
+| HTTP 5xx | LeetCode server down — re-run |
+| Push rejected (non-fast-forward) | Re-run the workflow |
+| Push rejected (403) | Settings → Actions → General → Workflow permissions → Read and write |
+| Timeout | LeetCode API slow — re-run |
+
+Close this issue once the sync is working again.
+EOF
+            gh issue create \
+              --title "LeetCode sync failed ($(date -u +%Y-%m-%d))" \
+              --label sync-failure \
+              --body-file "$BODY_FILE"
+          fi

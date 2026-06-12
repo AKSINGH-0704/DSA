@@ -19,9 +19,11 @@ from typing import Iterator, Optional
 
 import requests
 
+_OP_NAME_RE = re.compile(r"query\s+(\w+)")
+
 
 def _op_name(query: str) -> str:
-    m = re.search(r"query\s+(\w+)", query)
+    m = _OP_NAME_RE.search(query)
     return m.group(1) if m else "unknown"
 
 GRAPHQL_URL = "https://leetcode.com/graphql"
@@ -108,7 +110,7 @@ class LeetCodeClient:
                 resp = self._session.post(
                     GRAPHQL_URL,
                     json={"query": query, "variables": variables},
-                    timeout=30,
+                    timeout=(10, 30),
                 )
             except requests.RequestException as exc:
                 elapsed = time.monotonic() - t0
@@ -121,9 +123,36 @@ class LeetCodeClient:
             print(f"  [leetcode] {op} -> HTTP {resp.status_code} ({elapsed:.1f}s)", flush=True)
 
             if resp.status_code == 200:
-                payload = resp.json()
+                try:
+                    payload = resp.json()
+                except ValueError:
+                    # Cloudflare sometimes intercepts with HTTP 200 and returns
+                    # an HTML challenge page instead of JSON.
+                    snippet = resp.text[:120].replace("\n", " ")
+                    print(
+                        f"  [leetcode] {op} HTTP 200 but non-JSON body (Cloudflare?) "
+                        f"— snippet: {snippet!r}",
+                        flush=True,
+                    )
+                    if attempt == retries:
+                        raise RuntimeError(
+                            f"LeetCode returned HTTP 200 with non-JSON body for {op} "
+                            f"after {retries} attempts. This is usually a transient "
+                            "Cloudflare block. Re-run the workflow."
+                        )
+                    time.sleep(self._delay * attempt * 2)
+                    continue
+
                 if payload.get("errors"):
-                    raise RuntimeError(f"LeetCode GraphQL error: {payload['errors']}")
+                    errs = payload["errors"]
+                    print(f"  [leetcode] {op} GraphQL errors: {errs}", flush=True)
+                    if attempt == retries:
+                        raise RuntimeError(
+                            f"LeetCode GraphQL error for {op} after {retries} attempts: {errs}"
+                        )
+                    time.sleep(self._delay * attempt * 2)
+                    continue
+
                 return payload["data"]
 
             if resp.status_code == 401:

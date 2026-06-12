@@ -4,19 +4,27 @@ Sync accepted LeetCode submissions into this repository.
 
 Modes
 -----
-Incremental (default, runs every 3h via cron):
-    Scans the most recent `--max-pages` pages of submission history
-    (default 10 pages x 20 = 200 most recent submissions, of any status).
-    This comfortably covers anything submitted since the last run.
+Incremental (default, runs every 6h via cron):
+    Loads .sync_state.json from the repo root to find the last-synced
+    submission ID, then fetches submissions newest-first and stops as soon
+    as an ID <= the stored value is seen.  This eliminates the 200-submission
+    sliding-window assumption: no submissions are ever missed regardless of
+    how many you make between runs.  If no state file exists (first run),
+    falls back to scanning the most recent `--max-pages` pages.
 
 Backfill (--backfill, run manually once via workflow_dispatch):
-    Paginates through the ENTIRE submission history.
+    Ignores the state file and paginates through the ENTIRE submission
+    history.  State is saved at the end so the next incremental run starts
+    from the right point.
 
 In both modes, for every ACCEPTED submission the script:
   1. Resolves the problem's frontend ID + slug.
   2. Checks whether "<id>-<slug>/" already exists in the repo - if so, skips it.
   3. Otherwise fetches the problem statement + submission code and writes a
      new "<id>-<slug>/" folder containing README.md and the solution file.
+
+State file (.sync_state.json) is committed alongside new problem folders by
+the calling workflow, so the recorded ID and repo contents are always in sync.
 
 No git operations happen here - the calling workflow stages/commits/pushes
 only if files actually changed, which guarantees no empty/duplicate commits.
@@ -33,6 +41,7 @@ import time
 
 from client import LeetCodeAuthError, LeetCodeClient
 from repo import problem_exists, write_problem
+from state import load_state, save_state
 
 ACCEPTED = "Accepted"
 DEFAULT_INCREMENTAL_PAGES = 10  # 10 pages x 20/page = 200 most recent submissions
@@ -105,8 +114,23 @@ def main() -> int:
         return 1
     print(f"Authenticated as LeetCode user: {username}", flush=True)
 
-    max_pages = None if args.backfill else args.max_pages
-    mode = "backfill (full history)" if args.backfill else f"incremental (last {max_pages} page(s) of submissions)"
+    # State-based incremental scan: load last-synced submission ID so we stop
+    # exactly where the previous run left off rather than relying on a fixed
+    # 200-submission window.
+    last_synced_id = 0
+    if not args.backfill:
+        last_synced_id = load_state(args.repo_root)
+        if last_synced_id:
+            print(f"State loaded: will stop at submission_id <= {last_synced_id}", flush=True)
+        else:
+            print(f"No prior state — scanning last {args.max_pages} page(s).", flush=True)
+
+    max_pages = None if args.backfill else (None if last_synced_id else args.max_pages)
+    mode = "backfill (full history)" if args.backfill else (
+        "incremental (state-based, newest-first until last synced ID)"
+        if last_synced_id else
+        f"incremental (page-window, last {args.max_pages} page(s))"
+    )
     if args.dry_run:
         mode = f"DRY RUN / {mode}"
     print(f"Scanning submissions: {mode}", flush=True)
@@ -116,8 +140,23 @@ def main() -> int:
     skipped_existing: set[str] = set()
     seen_slugs: set[str] = set()
     per_problem_errors: list[str] = []
+    max_seen_id: int = 0  # highest submission ID seen this run (first page, first sub)
 
     for sub in client.iter_submissions(max_pages=max_pages):
+        sub_id = int(sub.get("id") or 0)
+
+        # Update running max (submissions are newest-first so this triggers once).
+        if sub_id > max_seen_id:
+            max_seen_id = sub_id
+
+        # State-based early termination: we've reached submissions we already processed.
+        if not args.backfill and last_synced_id and sub_id <= last_synced_id:
+            print(
+                f"[state] Reached submission_id={sub_id} (<= last_synced_id={last_synced_id}) — stopping scan.",
+                flush=True,
+            )
+            break
+
         if sub.get("statusDisplay") != ACCEPTED:
             continue
 
@@ -162,6 +201,12 @@ def main() -> int:
             msg = f"  ERROR: could not sync '{slug}': {type(exc).__name__}: {exc}"
             print(msg, flush=True)
             per_problem_errors.append(slug)
+
+    # Persist state after every successful (non-dry-run) scan so the next
+    # incremental run knows where to stop.  Saved even when nothing was added —
+    # this advances the cursor past non-accepted submissions too.
+    if not args.dry_run and max_seen_id > 0:
+        save_state(args.repo_root, max_seen_id, username)
 
     if args.dry_run:
         print(
