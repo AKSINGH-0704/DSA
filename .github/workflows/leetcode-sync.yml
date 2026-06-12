@@ -39,6 +39,7 @@ jobs:
         env:
           LEETCODE_SESSION: ${{ secrets.LEETCODE_SESSION }}
           LEETCODE_CSRF_TOKEN: ${{ secrets.LEETCODE_CSRF_TOKEN }}
+          PYTHONUNBUFFERED: "1"
         run: |
           if [ "${{ github.event.inputs.backfill }}" = "true" ]; then
             python scripts/leetcode_sync/sync.py --repo-root . --backfill
