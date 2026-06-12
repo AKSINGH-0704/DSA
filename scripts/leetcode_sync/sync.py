@@ -80,17 +80,18 @@ def main() -> int:
         return 1
 
     client = LeetCodeClient(session_cookie, csrf_token, request_delay=args.request_delay)
+    print("Credentials loaded. Connecting to LeetCode ...", flush=True)
 
     try:
         username = client.verify_auth()
     except LeetCodeAuthError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {exc}", file=sys.stderr, flush=True)
         return 1
-    print(f"Authenticated as LeetCode user: {username}")
+    print(f"Authenticated as LeetCode user: {username}", flush=True)
 
     max_pages = None if args.backfill else args.max_pages
     mode = "backfill (full history)" if args.backfill else f"incremental (last {max_pages} page(s) of submissions)"
-    print(f"Scanning submissions: {mode}")
+    print(f"Scanning submissions: {mode}", flush=True)
 
     added: list[str] = []
     skipped_existing: set[str] = set()

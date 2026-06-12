@@ -13,10 +13,16 @@ requests start failing, check SETUP.md's troubleshooting section first.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Iterator, Optional
 
 import requests
+
+
+def _op_name(query: str) -> str:
+    m = re.search(r"query\s+(\w+)", query)
+    return m.group(1) if m else "unknown"
 
 GRAPHQL_URL = "https://leetcode.com/graphql"
 
@@ -93,8 +99,10 @@ class LeetCodeClient:
         )
 
     def _post(self, query: str, variables: dict, retries: int = 3) -> dict:
+        op = _op_name(query)
         last_exc: Optional[Exception] = None
         for attempt in range(1, retries + 1):
+            print(f"  [leetcode] POST {op} (attempt {attempt}/{retries}) ...", flush=True)
             try:
                 resp = self._session.post(
                     GRAPHQL_URL,
@@ -102,9 +110,12 @@ class LeetCodeClient:
                     timeout=30,
                 )
             except requests.RequestException as exc:
+                print(f"  [leetcode] {op} network error: {exc}", flush=True)
                 last_exc = exc
                 time.sleep(self._delay * attempt)
                 continue
+
+            print(f"  [leetcode] {op} -> HTTP {resp.status_code}", flush=True)
 
             if resp.status_code == 200:
                 payload = resp.json()
@@ -115,11 +126,13 @@ class LeetCodeClient:
             if resp.status_code in (401, 403, 429):
                 if attempt == retries:
                     raise LeetCodeAuthError(
-                        f"LeetCode returned HTTP {resp.status_code} for {query.split()[1]}. "
+                        f"LeetCode returned HTTP {resp.status_code} for {op}. "
                         "Your LEETCODE_SESSION / LEETCODE_CSRF_TOKEN secrets are likely "
                         "expired, invalid, or temporarily rate-limited - see SETUP.md."
                     )
-                time.sleep(self._delay * attempt * 2)
+                wait = self._delay * attempt * 2
+                print(f"  [leetcode] {op} rate-limited, retrying in {wait:.0f}s ...", flush=True)
+                time.sleep(wait)
                 continue
 
             resp.raise_for_status()
@@ -128,6 +141,7 @@ class LeetCodeClient:
 
     def verify_auth(self) -> str:
         """Return the signed-in username, or raise LeetCodeAuthError."""
+        print("[leetcode] Verifying session credentials ...", flush=True)
         data = self._post(USER_STATUS_QUERY, {})
         status = data.get("userStatus") or {}
         if not status.get("isSignedIn"):
@@ -150,6 +164,7 @@ class LeetCodeClient:
         page = 0
         while True:
             page += 1
+            print(f"[leetcode] Fetching submission page {page} (offset={offset}) ...", flush=True)
             data = self._post(
                 SUBMISSION_LIST_QUERY,
                 {"offset": offset, "limit": page_size, "lastKey": last_key},
@@ -169,6 +184,7 @@ class LeetCodeClient:
             time.sleep(self._delay)
 
     def get_question(self, title_slug: str) -> dict:
+        print(f"[leetcode] Fetching question metadata: {title_slug} ...", flush=True)
         data = self._post(QUESTION_QUERY, {"titleSlug": title_slug})
         question = data.get("question")
         if not question:
@@ -177,6 +193,7 @@ class LeetCodeClient:
 
     def get_submission_code(self, submission_id) -> Optional[tuple]:
         """Return (code, language_name) for a submission, or None if unavailable."""
+        print(f"[leetcode] Fetching submission code: id={submission_id} ...", flush=True)
         data = self._post(SUBMISSION_DETAIL_QUERY, {"submissionId": int(submission_id)})
         detail = data.get("submissionDetails")
         if not detail or not detail.get("code"):
