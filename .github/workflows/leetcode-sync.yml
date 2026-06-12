@@ -1,0 +1,59 @@
+name: LeetCode Sync
+
+on:
+  schedule:
+    # Every 1 hour
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: 'Backfill ALL historical accepted submissions (paginates full submission history)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+# Prevent overlapping runs from racing on the same commit/push.
+concurrency:
+  group: leetcode-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run LeetCode sync
+        id: sync
+        env:
+          LEETCODE_SESSION: ${{ secrets.LEETCODE_SESSION }}
+          LEETCODE_CSRF_TOKEN: ${{ secrets.LEETCODE_CSRF_TOKEN }}
+        run: |
+          if [ "${{ github.event.inputs.backfill }}" = "true" ]; then
+            python scripts/leetcode_sync/sync.py --repo-root . --backfill
+          else
+            python scripts/leetcode_sync/sync.py --repo-root .
+          fi
+
+      - name: Commit and push new problems
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          if git diff --cached --quiet; then
+            echo "No new accepted submissions - nothing to commit."
+          else
+            git commit -F "${RUNNER_TEMP}/leetcode_sync_summary.txt"
+            git push
+          fi
