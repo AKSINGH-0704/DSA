@@ -2,12 +2,16 @@ name: LeetCode Sync
 
 on:
   schedule:
-    # Every 3 hours
-    - cron: '0 */3 * * *'
+    # Every 6 hours
+    - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
       backfill:
         description: 'Backfill ALL historical accepted submissions (paginates full submission history)'
+        type: boolean
+        default: false
+      dry_run:
+        description: 'Dry run — report what would be committed without writing files or creating commits'
         type: boolean
         default: false
 
@@ -42,13 +46,17 @@ jobs:
           LEETCODE_CSRF_TOKEN: ${{ secrets.LEETCODE_CSRF_TOKEN }}
           PYTHONUNBUFFERED: "1"
         run: |
+          FLAGS=""
           if [ "${{ github.event.inputs.backfill }}" = "true" ]; then
-            python scripts/leetcode_sync/sync.py --repo-root . --backfill
-          else
-            python scripts/leetcode_sync/sync.py --repo-root .
+            FLAGS="--backfill"
           fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            FLAGS="$FLAGS --dry-run"
+          fi
+          python scripts/leetcode_sync/sync.py --repo-root . $FLAGS
 
       - name: Commit and push new problems
+        if: github.event.inputs.dry_run != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -64,3 +72,32 @@ jobs:
             git pull --rebase origin HEAD
             git push
           fi
+
+      - name: Diagnose failure
+        if: failure()
+        run: |
+          echo "::error title=LeetCode Sync Failed::The sync job failed — see the step logs above for the exact error."
+          echo ""
+          echo "Diagnostic guide:"
+          echo "  HTTP 401  → LEETCODE_SESSION cookie has expired."
+          echo "              Fix: log in to leetcode.com, copy a fresh LEETCODE_SESSION cookie,"
+          echo "              go to Settings → Secrets → Actions and update LEETCODE_SESSION."
+          echo ""
+          echo "  HTTP 403  → Cloudflare is blocking this GitHub Actions runner IP (transient)."
+          echo "              Fix: re-run the workflow. Usually clears within minutes."
+          echo "              Only update secrets if HTTP 403 persists for >24 h."
+          echo ""
+          echo "  HTTP 429  → LeetCode rate-limit. Wait 10–30 min and re-run."
+          echo ""
+          echo "  HTTP 5xx  → LeetCode server unavailable (transient). Re-run the workflow."
+          echo ""
+          echo "  Push rejected (non-fast-forward)"
+          echo "              → A concurrent push landed between checkout and this run's push."
+          echo "                Re-run the workflow."
+          echo ""
+          echo "  Push rejected (403/permission denied)"
+          echo "              → GitHub Actions write permission is not enabled."
+          echo "                Fix: Settings → Actions → General → Workflow permissions"
+          echo "                → 'Read and write permissions' → Save."
+          echo ""
+          echo "  Timeout     → LeetCode API was slow. Re-run the workflow."

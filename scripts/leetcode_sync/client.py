@@ -103,6 +103,7 @@ class LeetCodeClient:
         last_exc: Optional[Exception] = None
         for attempt in range(1, retries + 1):
             print(f"  [leetcode] POST {op} (attempt {attempt}/{retries}) ...", flush=True)
+            t0 = time.monotonic()
             try:
                 resp = self._session.post(
                     GRAPHQL_URL,
@@ -110,12 +111,14 @@ class LeetCodeClient:
                     timeout=30,
                 )
             except requests.RequestException as exc:
-                print(f"  [leetcode] {op} network error: {exc}", flush=True)
+                elapsed = time.monotonic() - t0
+                print(f"  [leetcode] {op} network error after {elapsed:.1f}s: {exc}", flush=True)
                 last_exc = exc
                 time.sleep(self._delay * attempt)
                 continue
 
-            print(f"  [leetcode] {op} -> HTTP {resp.status_code}", flush=True)
+            elapsed = time.monotonic() - t0
+            print(f"  [leetcode] {op} -> HTTP {resp.status_code} ({elapsed:.1f}s)", flush=True)
 
             if resp.status_code == 200:
                 payload = resp.json()

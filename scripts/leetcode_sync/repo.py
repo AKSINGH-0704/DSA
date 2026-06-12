@@ -14,6 +14,10 @@ e.g. "23-merge-k-sorted-lists/README.md" and
 from __future__ import annotations
 
 import os
+import re
+
+# Matches any folder whose name is {digits}-{anything}, i.e. a valid problem folder.
+_PROBLEM_DIR_RE = re.compile(r"^\d+-.+$")
 
 DIFFICULTY_COLORS = {
     "Easy": "green",
@@ -56,8 +60,34 @@ def folder_name(frontend_id: str, title_slug: str) -> str:
 
 
 def problem_exists(repo_root: str, frontend_id: str, title_slug: str) -> bool:
-    """True if a folder for this problem already exists in the repo."""
-    return os.path.isdir(os.path.join(repo_root, folder_name(frontend_id, title_slug)))
+    """
+    True if a folder for this problem already exists in the repo.
+
+    Two checks are performed in order:
+
+    1. Exact match: {frontend_id}-{title_slug} directory exists.
+       This is the fast path and covers 99 % of cases.
+
+    2. Slug-pattern fallback: any directory matching r'^[0-9]+-{title_slug}$'.
+       This handles the case where a pre-existing folder (e.g. imported by
+       LeetSync) used a different numeric ID than the one LeetCode's
+       questionFrontendId returns today. Without this check, the backfill
+       would create a second folder for the same problem under the API ID,
+       producing silent duplicates (which is exactly what happened to the
+       8 contest-problem pairs already in this repo).
+    """
+    if os.path.isdir(os.path.join(repo_root, folder_name(frontend_id, title_slug))):
+        return True
+    slug_suffix = f"-{title_slug}"
+    try:
+        for entry in os.listdir(repo_root):
+            if (entry.endswith(slug_suffix)
+                    and _PROBLEM_DIR_RE.match(entry)
+                    and os.path.isdir(os.path.join(repo_root, entry))):
+                return True
+    except OSError:
+        pass
+    return False
 
 
 def _readme_content(question: dict) -> str:
