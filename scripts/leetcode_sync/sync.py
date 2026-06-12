@@ -4,7 +4,7 @@ Sync accepted LeetCode submissions into this repository.
 
 Modes
 -----
-Incremental (default, runs every 1h via cron):
+Incremental (default, runs every 3h via cron):
     Scans the most recent `--max-pages` pages of submission history
     (default 10 pages x 20 = 200 most recent submissions, of any status).
     This comfortably covers anything submitted since the last run.
@@ -96,6 +96,7 @@ def main() -> int:
     added: list[str] = []
     skipped_existing: set[str] = set()
     seen_slugs: set[str] = set()
+    per_problem_errors: list[str] = []
 
     for sub in client.iter_submissions(max_pages=max_pages):
         if sub.get("statusDisplay") != ACCEPTED:
@@ -108,33 +109,47 @@ def main() -> int:
             continue
         seen_slugs.add(slug)
 
-        question = client.get_question(slug)
-        frontend_id = question["questionFrontendId"]
-        time.sleep(args.request_delay)
+        try:
+            question = client.get_question(slug)
+            frontend_id = question["questionFrontendId"]
+            time.sleep(args.request_delay)
 
-        if problem_exists(args.repo_root, frontend_id, slug):
-            skipped_existing.add(slug)
-            continue
+            if problem_exists(args.repo_root, frontend_id, slug):
+                skipped_existing.add(slug)
+                continue
 
-        result = client.get_submission_code(sub["id"])
-        time.sleep(args.request_delay)
-        if result is None:
-            print(f"  WARNING: code unavailable for '{slug}' (submission {sub['id']}); will retry next run")
-            continue
+            result = client.get_submission_code(sub["id"])
+            time.sleep(args.request_delay)
+            if result is None:
+                print(f"  WARNING: code unavailable for '{slug}' (submission {sub['id']}); will retry next run", flush=True)
+                continue
 
-        code, lang_name = result
-        lang = sub.get("lang") or lang_name or "txt"
-        folder = write_problem(args.repo_root, question, code, lang)
-        added.append(folder)
-        print(f"  + added {folder} ({lang})")
+            code, lang_name = result
+            lang = sub.get("lang") or lang_name or "txt"
+            folder = write_problem(args.repo_root, question, code, lang)
+            added.append(folder)
+            print(f"  + added {folder} ({lang})", flush=True)
+
+        except Exception as exc:
+            msg = f"  ERROR: could not sync '{slug}': {type(exc).__name__}: {exc}"
+            print(msg, flush=True)
+            per_problem_errors.append(slug)
 
     print(
         f"\nDone. Added {len(added)} new problem(s); "
-        f"{len(skipped_existing)} already-present problem(s) skipped."
+        f"{len(skipped_existing)} already-present problem(s) skipped; "
+        f"{len(per_problem_errors)} error(s).",
+        flush=True,
     )
+    if per_problem_errors:
+        print(f"  Problems that failed (will retry on next run): {', '.join(per_problem_errors)}", flush=True)
+        print("::warning::Some problems failed to sync - see logs above for details.", flush=True)
 
     summary_lines = [f"Synced {len(added)} new accepted LeetCode submission(s)."]
     summary_lines += [f"- {name}" for name in sorted(added)]
+    if per_problem_errors:
+        summary_lines += ["", f"Errors ({len(per_problem_errors)} problem(s) skipped - will retry):"]
+        summary_lines += [f"- {slug}" for slug in per_problem_errors]
     summary = "\n".join(summary_lines) + "\n"
 
     summary_dir = os.path.dirname(args.summary_file)
@@ -142,11 +157,13 @@ def main() -> int:
         os.makedirs(summary_dir, exist_ok=True)
     with open(args.summary_file, "w", encoding="utf-8") as f:
         f.write(summary)
+    print(f"Summary written to {args.summary_file}", flush=True)
 
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
         with open(github_output, "a", encoding="utf-8") as f:
             f.write(f"added_count={len(added)}\n")
+            f.write(f"error_count={len(per_problem_errors)}\n")
 
     return 0
 

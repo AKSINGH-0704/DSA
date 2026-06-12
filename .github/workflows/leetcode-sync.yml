@@ -2,8 +2,8 @@ name: LeetCode Sync
 
 on:
   schedule:
-    # Every 1 hour
-    - cron: '0 * * * *'
+    # Every 3 hours
+    - cron: '0 */3 * * *'
   workflow_dispatch:
     inputs:
       backfill:
@@ -22,6 +22,7 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -55,6 +56,11 @@ jobs:
           if git diff --cached --quiet; then
             echo "No new accepted submissions - nothing to commit."
           else
-            git commit -F "${RUNNER_TEMP}/leetcode_sync_summary.txt"
+            SUMMARY="${RUNNER_TEMP}/leetcode_sync_summary.txt"
+            if [ ! -f "$SUMMARY" ]; then
+              echo "Synced new accepted LeetCode submission(s)." > "$SUMMARY"
+            fi
+            git commit -F "$SUMMARY"
+            git pull --rebase origin HEAD
             git push
           fi

@@ -123,15 +123,52 @@ class LeetCodeClient:
                     raise RuntimeError(f"LeetCode GraphQL error: {payload['errors']}")
                 return payload["data"]
 
-            if resp.status_code in (401, 403, 429):
+            if resp.status_code == 401:
                 if attempt == retries:
                     raise LeetCodeAuthError(
-                        f"LeetCode returned HTTP {resp.status_code} for {op}. "
-                        "Your LEETCODE_SESSION / LEETCODE_CSRF_TOKEN secrets are likely "
-                        "expired, invalid, or temporarily rate-limited - see SETUP.md."
+                        f"LeetCode returned HTTP 401 for {op}. "
+                        "Your LEETCODE_SESSION cookie is expired or invalid. "
+                        "Log in to leetcode.com, copy a fresh LEETCODE_SESSION cookie, "
+                        "and update the GitHub secret - see SETUP.md."
                     )
                 wait = self._delay * attempt * 2
-                print(f"  [leetcode] {op} rate-limited, retrying in {wait:.0f}s ...", flush=True)
+                print(f"  [leetcode] {op} HTTP 401, retrying in {wait:.0f}s ...", flush=True)
+                time.sleep(wait)
+                continue
+
+            if resp.status_code == 403:
+                if attempt == retries:
+                    raise LeetCodeAuthError(
+                        f"LeetCode returned HTTP 403 for {op} after {retries} attempts. "
+                        "This is usually a transient Cloudflare block on GitHub Actions IPs, "
+                        "not an expired session. Re-run the workflow - it typically clears "
+                        "within minutes. If it persists for >24 h, refresh your secrets."
+                    )
+                wait = self._delay * attempt * 2
+                print(f"  [leetcode] {op} HTTP 403 (Cloudflare/auth), retrying in {wait:.0f}s ...", flush=True)
+                time.sleep(wait)
+                continue
+
+            if resp.status_code == 429:
+                if attempt == retries:
+                    raise LeetCodeAuthError(
+                        f"LeetCode returned HTTP 429 for {op} after {retries} attempts. "
+                        "You are being rate-limited. Wait a few minutes and re-run."
+                    )
+                wait = self._delay * attempt * 2
+                print(f"  [leetcode] {op} HTTP 429 (rate-limited), retrying in {wait:.0f}s ...", flush=True)
+                time.sleep(wait)
+                continue
+
+            if resp.status_code in (502, 503, 504):
+                if attempt == retries:
+                    raise RuntimeError(
+                        f"LeetCode returned HTTP {resp.status_code} for {op} after "
+                        f"{retries} attempts. The server is temporarily unavailable; "
+                        "re-run the workflow."
+                    )
+                wait = self._delay * attempt * 2
+                print(f"  [leetcode] {op} HTTP {resp.status_code} (transient), retrying in {wait:.0f}s ...", flush=True)
                 time.sleep(wait)
                 continue
 
