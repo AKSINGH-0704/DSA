@@ -2,17 +2,22 @@ name: LeetCode Sync
 
 on:
   schedule:
-    # Every 1 hour
-    - cron: '0 * * * *'
+    # Every 6 hours
+    - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
       backfill:
         description: 'Backfill ALL historical accepted submissions (paginates full submission history)'
         type: boolean
         default: false
+      dry_run:
+        description: 'Dry run — report what would be committed without writing files or creating commits'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+  issues: write
 
 # Prevent overlapping runs from racing on the same commit/push.
 concurrency:
@@ -22,6 +27,7 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -41,13 +47,17 @@ jobs:
           LEETCODE_CSRF_TOKEN: ${{ secrets.LEETCODE_CSRF_TOKEN }}
           PYTHONUNBUFFERED: "1"
         run: |
+          FLAGS=""
           if [ "${{ github.event.inputs.backfill }}" = "true" ]; then
-            python scripts/leetcode_sync/sync.py --repo-root . --backfill
-          else
-            python scripts/leetcode_sync/sync.py --repo-root .
+            FLAGS="--backfill"
           fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            FLAGS="$FLAGS --dry-run"
+          fi
+          python scripts/leetcode_sync/sync.py --repo-root . $FLAGS
 
       - name: Commit and push new problems
+        if: github.event.inputs.dry_run != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -55,6 +65,98 @@ jobs:
           if git diff --cached --quiet; then
             echo "No new accepted submissions - nothing to commit."
           else
-            git commit -F "${RUNNER_TEMP}/leetcode_sync_summary.txt"
+            SUMMARY="${RUNNER_TEMP}/leetcode_sync_summary.txt"
+            if [ ! -f "$SUMMARY" ]; then
+              echo "Synced new accepted LeetCode submission(s)." > "$SUMMARY"
+            fi
+            git commit -F "$SUMMARY"
+            git pull --rebase origin HEAD
             git push
+          fi
+
+      - name: Diagnose failure
+        if: failure()
+        run: |
+          echo "::error title=LeetCode Sync Failed::The sync job failed — see the step logs above for the exact error."
+          echo ""
+          echo "Diagnostic guide:"
+          echo "  HTTP 401  → LEETCODE_SESSION cookie has expired."
+          echo "              Fix: log in to leetcode.com, copy a fresh LEETCODE_SESSION cookie,"
+          echo "              go to Settings → Secrets → Actions and update LEETCODE_SESSION."
+          echo ""
+          echo "  HTTP 403  → Cloudflare is blocking this GitHub Actions runner IP (transient)."
+          echo "              Fix: re-run the workflow. Usually clears within minutes."
+          echo "              Only update secrets if HTTP 403 persists for >24 h."
+          echo ""
+          echo "  HTTP 429  → LeetCode rate-limit. Wait 10–30 min and re-run."
+          echo ""
+          echo "  HTTP 5xx  → LeetCode server unavailable (transient). Re-run the workflow."
+          echo ""
+          echo "  Push rejected (non-fast-forward)"
+          echo "              → A concurrent push landed between checkout and this run's push."
+          echo "                Re-run the workflow."
+          echo ""
+          echo "  Push rejected (403/permission denied)"
+          echo "              → GitHub Actions write permission is not enabled."
+          echo "                Fix: Settings → Actions → General → Workflow permissions"
+          echo "                → 'Read and write permissions' → Save."
+          echo ""
+          echo "  Timeout     → LeetCode API was slow. Re-run the workflow."
+
+      - name: Create failure issue
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create the label if it doesn't already exist (idempotent).
+          gh label create "sync-failure" \
+            --description "Automated LeetCode sync failure" \
+            --color "d93f0b" 2>/dev/null || true
+
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          RUN_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # If an open issue with this label already exists, add a comment
+          # rather than opening a duplicate.
+          EXISTING=$(gh issue list \
+            --label sync-failure \
+            --state open \
+            --limit 1 \
+            --json number \
+            --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING" ]; then
+            echo "Existing issue #${EXISTING} found — adding comment."
+            gh issue comment "$EXISTING" \
+              --body "Sync failed again at ${RUN_DATE}: [view run](${RUN_URL})"
+          else
+            BODY_FILE="${RUNNER_TEMP}/sync_failure_body.md"
+            cat > "$BODY_FILE" <<EOF
+## LeetCode Sync Failed
+
+The scheduled sync workflow failed. **No action needed unless this repeats.**
+
+| | |
+|---|---|
+| Run | [View logs](${RUN_URL}) |
+| Time | ${RUN_DATE} |
+
+## Common causes and fixes
+
+| Error | Fix |
+|---|---|
+| HTTP 401 | LEETCODE\_SESSION expired — refresh cookie and update the secret |
+| HTTP 403 | Transient Cloudflare block — re-run the workflow |
+| HTTP 429 | Rate-limited — wait 10–30 min, re-run |
+| HTTP 5xx | LeetCode server down — re-run |
+| Push rejected (non-fast-forward) | Re-run the workflow |
+| Push rejected (403) | Settings → Actions → General → Workflow permissions → Read and write |
+| Timeout | LeetCode API slow — re-run |
+
+Close this issue once the sync is working again.
+EOF
+            gh issue create \
+              --title "LeetCode sync failed ($(date -u +%Y-%m-%d))" \
+              --label sync-failure \
+              --body-file "$BODY_FILE"
           fi

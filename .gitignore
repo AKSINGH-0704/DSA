@@ -2,3 +2,5 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .env
+# Temp file written by save_state() before atomic rename — never commit this.
+.sync_state.json.tmp

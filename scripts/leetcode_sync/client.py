@@ -19,9 +19,11 @@ from typing import Iterator, Optional
 
 import requests
 
+_OP_NAME_RE = re.compile(r"query\s+(\w+)")
+
 
 def _op_name(query: str) -> str:
-    m = re.search(r"query\s+(\w+)", query)
+    m = _OP_NAME_RE.search(query)
     return m.group(1) if m else "unknown"
 
 GRAPHQL_URL = "https://leetcode.com/graphql"
@@ -103,35 +105,102 @@ class LeetCodeClient:
         last_exc: Optional[Exception] = None
         for attempt in range(1, retries + 1):
             print(f"  [leetcode] POST {op} (attempt {attempt}/{retries}) ...", flush=True)
+            t0 = time.monotonic()
             try:
                 resp = self._session.post(
                     GRAPHQL_URL,
                     json={"query": query, "variables": variables},
-                    timeout=30,
+                    timeout=(10, 30),
                 )
             except requests.RequestException as exc:
-                print(f"  [leetcode] {op} network error: {exc}", flush=True)
+                elapsed = time.monotonic() - t0
+                print(f"  [leetcode] {op} network error after {elapsed:.1f}s: {exc}", flush=True)
                 last_exc = exc
                 time.sleep(self._delay * attempt)
                 continue
 
-            print(f"  [leetcode] {op} -> HTTP {resp.status_code}", flush=True)
+            elapsed = time.monotonic() - t0
+            print(f"  [leetcode] {op} -> HTTP {resp.status_code} ({elapsed:.1f}s)", flush=True)
 
             if resp.status_code == 200:
-                payload = resp.json()
+                try:
+                    payload = resp.json()
+                except ValueError:
+                    # Cloudflare sometimes intercepts with HTTP 200 and returns
+                    # an HTML challenge page instead of JSON.
+                    snippet = resp.text[:120].replace("\n", " ")
+                    print(
+                        f"  [leetcode] {op} HTTP 200 but non-JSON body (Cloudflare?) "
+                        f"— snippet: {snippet!r}",
+                        flush=True,
+                    )
+                    if attempt == retries:
+                        raise RuntimeError(
+                            f"LeetCode returned HTTP 200 with non-JSON body for {op} "
+                            f"after {retries} attempts. This is usually a transient "
+                            "Cloudflare block. Re-run the workflow."
+                        )
+                    time.sleep(self._delay * attempt * 2)
+                    continue
+
                 if payload.get("errors"):
-                    raise RuntimeError(f"LeetCode GraphQL error: {payload['errors']}")
+                    errs = payload["errors"]
+                    print(f"  [leetcode] {op} GraphQL errors: {errs}", flush=True)
+                    if attempt == retries:
+                        raise RuntimeError(
+                            f"LeetCode GraphQL error for {op} after {retries} attempts: {errs}"
+                        )
+                    time.sleep(self._delay * attempt * 2)
+                    continue
+
                 return payload["data"]
 
-            if resp.status_code in (401, 403, 429):
+            if resp.status_code == 401:
                 if attempt == retries:
                     raise LeetCodeAuthError(
-                        f"LeetCode returned HTTP {resp.status_code} for {op}. "
-                        "Your LEETCODE_SESSION / LEETCODE_CSRF_TOKEN secrets are likely "
-                        "expired, invalid, or temporarily rate-limited - see SETUP.md."
+                        f"LeetCode returned HTTP 401 for {op}. "
+                        "Your LEETCODE_SESSION cookie is expired or invalid. "
+                        "Log in to leetcode.com, copy a fresh LEETCODE_SESSION cookie, "
+                        "and update the GitHub secret - see SETUP.md."
                     )
                 wait = self._delay * attempt * 2
-                print(f"  [leetcode] {op} rate-limited, retrying in {wait:.0f}s ...", flush=True)
+                print(f"  [leetcode] {op} HTTP 401, retrying in {wait:.0f}s ...", flush=True)
+                time.sleep(wait)
+                continue
+
+            if resp.status_code == 403:
+                if attempt == retries:
+                    raise LeetCodeAuthError(
+                        f"LeetCode returned HTTP 403 for {op} after {retries} attempts. "
+                        "This is usually a transient Cloudflare block on GitHub Actions IPs, "
+                        "not an expired session. Re-run the workflow - it typically clears "
+                        "within minutes. If it persists for >24 h, refresh your secrets."
+                    )
+                wait = self._delay * attempt * 2
+                print(f"  [leetcode] {op} HTTP 403 (Cloudflare/auth), retrying in {wait:.0f}s ...", flush=True)
+                time.sleep(wait)
+                continue
+
+            if resp.status_code == 429:
+                if attempt == retries:
+                    raise LeetCodeAuthError(
+                        f"LeetCode returned HTTP 429 for {op} after {retries} attempts. "
+                        "You are being rate-limited. Wait a few minutes and re-run."
+                    )
+                wait = self._delay * attempt * 2
+                print(f"  [leetcode] {op} HTTP 429 (rate-limited), retrying in {wait:.0f}s ...", flush=True)
+                time.sleep(wait)
+                continue
+
+            if resp.status_code in (502, 503, 504):
+                if attempt == retries:
+                    raise RuntimeError(
+                        f"LeetCode returned HTTP {resp.status_code} for {op} after "
+                        f"{retries} attempts. The server is temporarily unavailable; "
+                        "re-run the workflow."
+                    )
+                wait = self._delay * attempt * 2
+                print(f"  [leetcode] {op} HTTP {resp.status_code} (transient), retrying in {wait:.0f}s ...", flush=True)
                 time.sleep(wait)
                 continue
 
