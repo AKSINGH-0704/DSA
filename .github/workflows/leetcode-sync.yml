@@ -11,7 +11,7 @@ on:
         type: boolean
         default: false
       dry_run:
-        description: 'Dry run — report what would be committed without writing files or creating commits'
+        description: 'Dry run -- report what would be committed without writing files or creating commits'
         type: boolean
         default: false
 
@@ -77,38 +77,37 @@ jobs:
       - name: Diagnose failure
         if: failure()
         run: |
-          echo "::error title=LeetCode Sync Failed::The sync job failed — see the step logs above for the exact error."
+          echo "::error title=LeetCode Sync Failed::The sync job failed -- see the step logs above for the exact error."
           echo ""
           echo "Diagnostic guide:"
-          echo "  HTTP 401  → LEETCODE_SESSION cookie has expired."
-          echo "              Fix: log in to leetcode.com, copy a fresh LEETCODE_SESSION cookie,"
-          echo "              go to Settings → Secrets → Actions and update LEETCODE_SESSION."
+          echo "  HTTP 401  -- LEETCODE_SESSION cookie has expired."
+          echo "               Fix: log in to leetcode.com, copy a fresh LEETCODE_SESSION cookie,"
+          echo "               go to Settings > Secrets > Actions and update LEETCODE_SESSION."
           echo ""
-          echo "  HTTP 403  → Cloudflare is blocking this GitHub Actions runner IP (transient)."
-          echo "              Fix: re-run the workflow. Usually clears within minutes."
-          echo "              Only update secrets if HTTP 403 persists for >24 h."
+          echo "  HTTP 403  -- Cloudflare is blocking this GitHub Actions runner IP (transient)."
+          echo "               Fix: re-run the workflow. Usually clears within minutes."
+          echo "               Only update secrets if HTTP 403 persists for >24 h."
           echo ""
-          echo "  HTTP 429  → LeetCode rate-limit. Wait 10–30 min and re-run."
+          echo "  HTTP 429  -- LeetCode rate-limit. Wait 10-30 min and re-run."
           echo ""
-          echo "  HTTP 5xx  → LeetCode server unavailable (transient). Re-run the workflow."
+          echo "  HTTP 5xx  -- LeetCode server unavailable (transient). Re-run the workflow."
           echo ""
           echo "  Push rejected (non-fast-forward)"
-          echo "              → A concurrent push landed between checkout and this run's push."
-          echo "                Re-run the workflow."
+          echo "               -- A concurrent push landed between checkout and this run's push."
+          echo "                  Re-run the workflow."
           echo ""
           echo "  Push rejected (403/permission denied)"
-          echo "              → GitHub Actions write permission is not enabled."
-          echo "                Fix: Settings → Actions → General → Workflow permissions"
-          echo "                → 'Read and write permissions' → Save."
+          echo "               -- GitHub Actions write permission is not enabled."
+          echo "                  Fix: Settings > Actions > General > Workflow permissions"
+          echo "                  > Read and write permissions > Save."
           echo ""
-          echo "  Timeout     → LeetCode API was slow. Re-run the workflow."
+          echo "  Timeout    -- LeetCode API was slow. Re-run the workflow."
 
       - name: Create failure issue
         if: failure() && github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Create the label if it doesn't already exist (idempotent).
           gh label create "sync-failure" \
             --description "Automated LeetCode sync failure" \
             --color "d93f0b" 2>/dev/null || true
@@ -116,8 +115,6 @@ jobs:
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           RUN_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-          # If an open issue with this label already exists, add a comment
-          # rather than opening a duplicate.
           EXISTING=$(gh issue list \
             --label sync-failure \
             --state open \
@@ -126,35 +123,35 @@ jobs:
             --jq '.[0].number // empty')
 
           if [ -n "$EXISTING" ]; then
-            echo "Existing issue #${EXISTING} found — adding comment."
+            echo "Existing issue #${EXISTING} found -- adding comment."
             gh issue comment "$EXISTING" \
               --body "Sync failed again at ${RUN_DATE}: [view run](${RUN_URL})"
           else
             BODY_FILE="${RUNNER_TEMP}/sync_failure_body.md"
-            cat > "$BODY_FILE" <<EOF
-## LeetCode Sync Failed
-
-The scheduled sync workflow failed. **No action needed unless this repeats.**
-
-| | |
-|---|---|
-| Run | [View logs](${RUN_URL}) |
-| Time | ${RUN_DATE} |
-
-## Common causes and fixes
-
-| Error | Fix |
-|---|---|
-| HTTP 401 | LEETCODE\_SESSION expired — refresh cookie and update the secret |
-| HTTP 403 | Transient Cloudflare block — re-run the workflow |
-| HTTP 429 | Rate-limited — wait 10–30 min, re-run |
-| HTTP 5xx | LeetCode server down — re-run |
-| Push rejected (non-fast-forward) | Re-run the workflow |
-| Push rejected (403) | Settings → Actions → General → Workflow permissions → Read and write |
-| Timeout | LeetCode API slow — re-run |
-
-Close this issue once the sync is working again.
-EOF
+            {
+              echo "## LeetCode Sync Failed"
+              echo ""
+              echo "The scheduled sync workflow failed. **No action needed unless this repeats.**"
+              echo ""
+              echo "| Field | Value |"
+              echo "|---|---|"
+              echo "| Run | [View logs](${RUN_URL}) |"
+              echo "| Time | ${RUN_DATE} |"
+              echo ""
+              echo "## Common causes and fixes"
+              echo ""
+              echo "| Error | Fix |"
+              echo "|---|---|"
+              echo "| HTTP 401 | LEETCODE_SESSION expired -- refresh cookie and update the secret |"
+              echo "| HTTP 403 | Transient Cloudflare block -- re-run the workflow |"
+              echo "| HTTP 429 | Rate-limited -- wait 10-30 min, re-run |"
+              echo "| HTTP 5xx | LeetCode server down -- re-run |"
+              echo "| Push rejected (non-fast-forward) | Re-run the workflow |"
+              echo "| Push rejected (403) | Settings > Actions > General > Workflow permissions > Read and write |"
+              echo "| Timeout | LeetCode API slow -- re-run |"
+              echo ""
+              echo "Close this issue once the sync is working again."
+            } > "$BODY_FILE"
             gh issue create \
               --title "LeetCode sync failed ($(date -u +%Y-%m-%d))" \
               --label sync-failure \
