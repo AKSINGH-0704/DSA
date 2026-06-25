@@ -55,9 +55,17 @@ def save_state(repo_root: str, submission_id: int, username: str) -> None:
     """
     Persist the last-seen submission ID after a successful sync.
 
+    Only writes the file when submission_id has actually advanced — if the
+    ID is unchanged the file is left untouched so git sees no diff and the
+    workflow skips an empty commit.
+
     Written via a temp-file + atomic rename so a mid-write crash never
     leaves a partially-written (corrupt) state file.
     """
+    if load_state(repo_root) == submission_id:
+        print(f"State unchanged (last_submission_id={submission_id}) — skipping write.", flush=True)
+        return
+
     path = os.path.join(repo_root, STATE_FILE)
     tmp = path + ".tmp"
     data = {
