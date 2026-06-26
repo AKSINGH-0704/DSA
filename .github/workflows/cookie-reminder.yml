@@ -1,0 +1,64 @@
+name: LeetCode Cookie Refresh Reminder
+
+on:
+  schedule:
+    # 1st of every month at 09:00 UTC
+    - cron: '0 9 1 * *'
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create or update cookie refresh reminder
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create "cookie-refresh" \
+            --description "Monthly reminder to refresh LeetCode cookies" \
+            --color "0075ca" 2>/dev/null || true
+
+          EXISTING=$(gh issue list \
+            --repo ${{ github.repository }} \
+            --label cookie-refresh \
+            --state open \
+            --limit 1 \
+            --json number \
+            --jq '.[0].number // empty')
+
+          MONTH=$(date -u +"%B %Y")
+          BODY=$(cat <<'EOF'
+## Time to refresh your LeetCode cookies
+
+LeetCode session cookies expire every **1–2 months**. Refreshing them now keeps the auto-sync running without interruption.
+
+### Steps (takes 2 minutes)
+
+1. Open [leetcode.com](https://leetcode.com) → log in → **tick "Remember Me"**
+2. Open DevTools → `F12` → **Application** tab → **Cookies** → `leetcode.com`
+3. Copy the value of `LEETCODE_SESSION`
+4. Copy the value of `csrftoken`
+5. Go to: **Settings → Secrets and variables → Actions** in this repo
+6. Update `LEETCODE_SESSION` with the new value
+7. Update `LEETCODE_CSRF_TOKEN` with the new value
+8. Trigger a manual run via **Actions → LeetCode Sync → Run workflow** to confirm it works
+9. **Close this issue** once confirmed working
+
+> If the sync is already failing with an auth error, follow the same steps above to fix it.
+EOF
+)
+
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" \
+              --repo ${{ github.repository }} \
+              --body "Monthly reminder ping ($MONTH) — please refresh your LeetCode cookies if you haven't done so recently."
+          else
+            gh issue create \
+              --repo ${{ github.repository }} \
+              --title "Monthly reminder: refresh LeetCode cookies ($MONTH)" \
+              --label cookie-refresh \
+              --body "$BODY"
+          fi
